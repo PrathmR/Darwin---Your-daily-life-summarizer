@@ -1,0 +1,138 @@
+# 3
+
+# meet summarized requirements.txt:
+assemblyai
+moviepy
+reportlab
+google.generativeai
+flask
+
+google-generativeai
+passlib[bcrypt]
+python-multipart
+
+
+
+
+fastapi
+uvicorn[standard]
+
+# Database
+sqlalchemy
+psycopg2-binary
+
+# Env & config
+python-dotenv
+pydantic
+pydantic-settings
+
+# Security / Auth
+passlib[argon2]    # passlib with argon2 support
+argon2-cffi
+
+# JWT
+python-jose[cryptography]
+
+# Helpers
+email-validator
+requests
+
+# Google OAuth
+google-auth
+google-auth-oauthlib
+requests-oauthlib
+
+
+
+# -----------------------------------------------------------
+
+
+
+# # 2
+# fastapi
+# uvicorn[standard]
+
+# # Database
+# sqlalchemy
+# psycopg2-binary
+
+# # Env & config
+# python-dotenv
+# pydantic
+# pydantic-settings
+
+# # Security / Auth
+# passlib[argon2]    # passlib with argon2 support
+# argon2-cffi
+
+# # JWT
+# python-jose[cryptography]
+
+# # Helpers
+# email-validator
+# requests
+
+# # Google OAuth
+# google-auth
+# google-auth-oauthlib
+# requests-oauthlib
+
+
+
+# -----------------------------------------------------------
+
+# 1
+# # # requirements.txt:
+
+# fastapi
+# uvicorn[standard]
+
+# # Database
+# sqlalchemy
+# psycopg2-binary
+
+# # Environment variables
+# python-dotenv
+
+# # Pydantic v2 + Settings
+# pydantic
+# pydantic-settings
+
+# # Security / Auth
+# passlib[bcrypt]
+# python-jose[cryptography]
+# email-validator
+
+# # HTTP Requests
+# requests
+
+# # Google OAuth
+# google-auth
+# google-auth-oauthlib
+# requests-oauthlib
+
+
+
+
+# ===============================================
+
+
+
+
+
+
+
+
+# fastapi
+# uvicorn[standard]
+# sqlalchemy
+# psycopg2-binary       # if using PostgreSQL
+# python-dotenv
+# pydantic
+# passlib[bcrypt]
+# python-jose[cryptography]
+# email-validator
+# requests # requests for google login
+
+
+
