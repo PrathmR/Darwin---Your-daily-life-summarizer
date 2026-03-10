@@ -1,0 +1,21 @@
+backend :
+    PS ...\Darwin\backend> .\venv\Scripts\Activate.ps1
+    (venv) PS ...\Darwin\backend> uvicorn app.main:app --reload  
+
+
+frontend:
+    PS ...\Darwin\frontend> npm run dev    
+
+
+Modification/edit logs:
+    date: 
+        "16 dec 2025, 12:40 AM";
+
+        description: 
+            "Have successfully migrated the meet summarizer from FLASK --> React.js (React + TypeScript (TSX) with Tailwind CSS)";
+    
+    date:
+        "";
+
+        description:
+            "";
