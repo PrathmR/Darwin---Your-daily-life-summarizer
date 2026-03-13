@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Upload, FileAudio, ArrowLeft, Download, FileText, Sparkles, Clock, Trash2, Calendar, Mic, Square, KeyRound } from "lucide-react";
+import { Upload, FileAudio, ArrowLeft, Download, FileText, Sparkles, Clock, Trash2, Calendar, Mic, Square, KeyRound, Camera } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 
@@ -131,6 +131,12 @@ export default function CreateGame() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number>();
+
+  // Screenshot Capture State
+  const videoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const screenshotsRef = useRef<Blob[]>([]);
+  const screenshotTimerRef = useRef<number>();
+  const [meetingScreenshots, setMeetingScreenshots] = useState<string[]>([]);
 
   useEffect(() => {
     const SRC = "https://accounts.google.com/gsi/client";
@@ -279,11 +285,46 @@ export default function CreateGame() {
     if (dropped) setFile(dropped);
   }
 
+  // Utility: capture a single frame from a video track
+  async function captureFrame(track: MediaStreamTrack): Promise<Blob | null> {
+    return new Promise((resolve) => {
+      try {
+        const video = document.createElement('video');
+        video.srcObject = new MediaStream([track]);
+        video.muted = true;
+        video.onloadedmetadata = () => {
+          video.play().then(() => {
+            // Small delay to ensure the frame is rendered
+            setTimeout(() => {
+              const canvas = document.createElement('canvas');
+              canvas.width = video.videoWidth || 1280;
+              canvas.height = video.videoHeight || 720;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob((blob) => {
+                  video.pause();
+                  video.srcObject = null;
+                  resolve(blob);
+                }, 'image/jpeg', 0.85);
+              } else {
+                resolve(null);
+              }
+            }, 500);
+          }).catch(() => resolve(null));
+        };
+        video.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
   async function startLiveRecording() {
     try {
-      // Capture system/tab audio (browser requires getDisplayMedia)
+      // Capture system/tab audio + video (browser requires getDisplayMedia)
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,  // required by browser API
+        video: true,
         audio: true
       });
 
@@ -295,10 +336,17 @@ export default function CreateGame() {
         return;
       }
 
-      // Immediately discard the video track — we only want audio
-      stream.getVideoTracks().forEach(track => track.stop());
+      // Keep the video track alive for screenshots
+      const videoTracks = stream.getVideoTracks();
+      if (videoTracks.length > 0) {
+        videoTrackRef.current = videoTracks[0];
+      }
 
-      // Create a new stream with only audio tracks
+      // Reset screenshots
+      screenshotsRef.current = [];
+      setMeetingScreenshots([]);
+
+      // Create a new stream with only audio tracks for recording
       const audioOnlyStream = new MediaStream(audioTracks);
       streamRef.current = stream;
 
@@ -312,17 +360,42 @@ export default function CreateGame() {
         }
       };
 
-      recorder.start(1000); // Collect data every 1s
+      recorder.start(1000);
       setIsRecording(true);
       setRecordingTime(0);
       setActiveSummary(null);
+
+      // Capture screenshot #1 immediately (with a small delay for stream to settle)
+      setTimeout(async () => {
+        if (videoTrackRef.current && videoTrackRef.current.readyState === 'live') {
+          const frame = await captureFrame(videoTrackRef.current);
+          if (frame) {
+            screenshotsRef.current.push(frame);
+            console.log('📸 Screenshot #1 captured (start of meeting)');
+          }
+        }
+      }, 2000);
+
+      // Capture screenshot #2 after 2 minutes, then stop video track
+      screenshotTimerRef.current = window.setTimeout(async () => {
+        if (videoTrackRef.current && videoTrackRef.current.readyState === 'live') {
+          const frame = await captureFrame(videoTrackRef.current);
+          if (frame) {
+            screenshotsRef.current.push(frame);
+            console.log('📸 Screenshot #2 captured (2 min mark)');
+          }
+          // Stop video track to save resources — we have our 2 screenshots
+          videoTrackRef.current.stop();
+          videoTrackRef.current = null;
+        }
+      }, 2 * 60 * 1000);
 
       // Start a timer to show elapsed time
       timerRef.current = window.setInterval(() => {
         setRecordingTime(prev => prev + 1);
       }, 1000);
 
-      toast({ title: "Recording started", description: "Capturing system audio. Click Stop when done." });
+      toast({ title: "Recording started", description: "Capturing audio & screenshots. Click Stop when done." });
 
     } catch (err) {
       console.error(err);
@@ -333,7 +406,19 @@ export default function CreateGame() {
   async function stopLiveRecording() {
     // Stop timer
     if (timerRef.current) clearInterval(timerRef.current);
+    if (screenshotTimerRef.current) clearTimeout(screenshotTimerRef.current);
     setIsRecording(false);
+
+    // If video track is still alive (recording < 2 min), capture screenshot #2 now
+    if (videoTrackRef.current && videoTrackRef.current.readyState === 'live') {
+      const frame = await captureFrame(videoTrackRef.current);
+      if (frame) {
+        screenshotsRef.current.push(frame);
+        console.log('📸 Screenshot #2 captured (end of meeting)');
+      }
+      videoTrackRef.current.stop();
+      videoTrackRef.current = null;
+    }
 
     // Stop recorder
     const recorder = mediaRecorderRef.current;
@@ -357,6 +442,10 @@ export default function CreateGame() {
       return;
     }
 
+    // Convert screenshots to object URLs for display
+    const screenshotUrls = screenshotsRef.current.map(blob => URL.createObjectURL(blob));
+    setMeetingScreenshots(screenshotUrls);
+
     // Upload the recorded blob to the existing file upload endpoint
     const clientId = Date.now().toString();
     const wsUrl = BACKEND_URL.replace("http", "ws") + `/ws/progress/${clientId}`;
@@ -365,12 +454,17 @@ export default function CreateGame() {
     ws.onmessage = (event) => setLoadingMsg(event.data);
 
     setLoading(true);
-    setLoadingMsg("Uploading recorded audio...");
+    setLoadingMsg("Uploading recorded audio & screenshots...");
 
     try {
       const form = new FormData();
       form.append("file", audioBlob, "live_recording.webm");
       form.append("client_id", clientId);
+
+      // Append screenshots
+      screenshotsRef.current.forEach((blob, idx) => {
+        form.append(`screenshot_${idx}`, blob, `screenshot_${idx}.jpg`);
+      });
 
       // Add custom API key and model if enabled
       if (useCustomKey && customApiKey.trim() !== "") {
@@ -698,6 +792,29 @@ export default function CreateGame() {
                     ))}
                   </div>
                 </div>
+
+                {/* Meeting Snapshots */}
+                {(meetingScreenshots.length > 0 || activeSummary.screenshots?.length > 0) && (
+                  <div className="bg-white border border-gray-200 rounded-2xl p-6 md:p-8 shadow-sm">
+                    <h3 className="text-sm font-bold uppercase tracking-wide text-gray-500 mb-4 flex items-center gap-2">
+                      <Camera className="w-4 h-4" /> Meeting Snapshots
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {(meetingScreenshots.length > 0 ? meetingScreenshots : activeSummary.screenshots || []).map((url: string, idx: number) => (
+                        <div key={idx} className="relative group">
+                          <img
+                            src={url}
+                            alt={`Meeting snapshot ${idx + 1}`}
+                            className="w-full rounded-xl border border-gray-100 shadow-sm"
+                          />
+                          <div className="absolute bottom-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded-md">
+                            {idx === 0 ? '📸 Start of Meeting' : '📸 During Meeting'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Facts / Tags */}
                 {activeSummary.facts && (

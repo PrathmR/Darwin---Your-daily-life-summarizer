@@ -14,4 +14,5 @@ class Summary(Base):
     summary_text = Column(Text, nullable=False)
     facts = Column(JSON, nullable=True)
     speaker_summaries = Column(JSON, nullable=True)
+    screenshots = Column(JSON, nullable=True)  # list of base64-encoded JPEG strings
     created_at = Column(DateTime, default=datetime.utcnow)
