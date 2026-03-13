@@ -23,6 +23,8 @@ async def summarize(
     file: UploadFile = File(...),
     calendar_context: Optional[str] = Form(None),
     client_id: Optional[str] = Form(None),
+    custom_api_key: Optional[str] = Form(None),
+    model_preference: Optional[str] = Form(None),
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db)
 ):
@@ -30,7 +32,7 @@ async def summarize(
         raise HTTPException(status_code=400, detail="No file uploaded")
 
     # Call the ML service
-    result = await process_uploaded_file(file, calendar_context, client_id)
+    result = await process_uploaded_file(file, calendar_context, client_id, custom_api_key, model_preference)
 
     meeting_topic = result.get("facts", {}).get("meeting_topic")
     filename_to_save = meeting_topic if meeting_topic else file.filename
