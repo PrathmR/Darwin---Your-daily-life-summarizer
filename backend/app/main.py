@@ -42,6 +42,18 @@ def create_app() -> FastAPI:
 app = create_app()
 Base.metadata.create_all(bind=engine)
 
+# Auto-migrate: add any missing columns to existing tables
+import sqlite3 as _sqlite3
+with engine.connect() as _conn:
+    _raw = _conn.connection.dbapi_connection
+    _cur = _raw.cursor()
+    _cur.execute("PRAGMA table_info(summaries)")
+    _existing_cols = {row[1] for row in _cur.fetchall()}
+    if "screenshots" not in _existing_cols:
+        _cur.execute("ALTER TABLE summaries ADD COLUMN screenshots JSON")
+        _raw.commit()
+        print("✅ Auto-migrated: added 'screenshots' column to summaries table")
+
 
 
 
