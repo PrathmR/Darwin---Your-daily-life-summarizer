@@ -134,9 +134,9 @@ export default function CreateGame() {
 
   // Screenshot Capture State
   const videoTrackRef = useRef<MediaStreamTrack | null>(null);
-  const screenshotsRef = useRef<Blob[]>([]);
+  const screenshotsDataRef = useRef<{ blob: Blob, timestamp: string }[]>([]);
   const screenshotTimerRef = useRef<number>();
-  const [meetingScreenshots, setMeetingScreenshots] = useState<string[]>([]);
+  const [meetingScreenshots, setMeetingScreenshots] = useState<{ url: string, timestamp: string }[]>([]);
 
   useEffect(() => {
     const SRC = "https://accounts.google.com/gsi/client";
@@ -285,6 +285,11 @@ export default function CreateGame() {
     if (dropped) setFile(dropped);
   }
 
+  // Utility: format seconds into MM:SS
+  const formatTime = (seconds: number) => {
+    return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+  };
+
   // Utility: capture a single frame from a video track
   async function captureFrame(track: MediaStreamTrack): Promise<Blob | null> {
     return new Promise((resolve) => {
@@ -343,7 +348,7 @@ export default function CreateGame() {
       }
 
       // Reset screenshots
-      screenshotsRef.current = [];
+      screenshotsDataRef.current = [];
       setMeetingScreenshots([]);
 
       // Create a new stream with only audio tracks for recording
@@ -365,12 +370,19 @@ export default function CreateGame() {
       setRecordingTime(0);
       setActiveSummary(null);
 
+      // Start a timer to show elapsed time (we start this *before* capturing so we have accurate time for screenshots)
+      timerRef.current = window.setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+
       // Capture screenshot #1 immediately (with a small delay for stream to settle)
       setTimeout(async () => {
         if (videoTrackRef.current && videoTrackRef.current.readyState === 'live') {
           const frame = await captureFrame(videoTrackRef.current);
           if (frame) {
-            screenshotsRef.current.push(frame);
+            // Read recording time at the moment of capture
+            const currentTime = formatTime(0); // For the first few seconds we just use 00:00
+            screenshotsDataRef.current.push({ blob: frame, timestamp: "00:02" });
             console.log('📸 Screenshot #1 captured (start of meeting)');
           }
         }
@@ -381,7 +393,7 @@ export default function CreateGame() {
         if (videoTrackRef.current && videoTrackRef.current.readyState === 'live') {
           const frame = await captureFrame(videoTrackRef.current);
           if (frame) {
-            screenshotsRef.current.push(frame);
+            screenshotsDataRef.current.push({ blob: frame, timestamp: "02:00" });
             console.log('📸 Screenshot #2 captured (2 min mark)');
           }
           // Stop video track to save resources — we have our 2 screenshots
@@ -389,11 +401,6 @@ export default function CreateGame() {
           videoTrackRef.current = null;
         }
       }, 2 * 60 * 1000);
-
-      // Start a timer to show elapsed time
-      timerRef.current = window.setInterval(() => {
-        setRecordingTime(prev => prev + 1);
-      }, 1000);
 
       toast({ title: "Recording started", description: "Capturing audio & screenshots. Click Stop when done." });
 
@@ -404,6 +411,9 @@ export default function CreateGame() {
   }
 
   async function stopLiveRecording() {
+    // Capture the time we stop at, so we can use it for screenshot #2 if needed
+    const stopTimeStr = formatTime(recordingTime);
+    
     // Stop timer
     if (timerRef.current) clearInterval(timerRef.current);
     if (screenshotTimerRef.current) clearTimeout(screenshotTimerRef.current);
@@ -413,8 +423,8 @@ export default function CreateGame() {
     if (videoTrackRef.current && videoTrackRef.current.readyState === 'live') {
       const frame = await captureFrame(videoTrackRef.current);
       if (frame) {
-        screenshotsRef.current.push(frame);
-        console.log('📸 Screenshot #2 captured (end of meeting)');
+        screenshotsDataRef.current.push({ blob: frame, timestamp: stopTimeStr });
+        console.log(`📸 Screenshot #2 captured (end of meeting at ${stopTimeStr})`);
       }
       videoTrackRef.current.stop();
       videoTrackRef.current = null;
@@ -443,8 +453,11 @@ export default function CreateGame() {
     }
 
     // Convert screenshots to object URLs for display
-    const screenshotUrls = screenshotsRef.current.map(blob => URL.createObjectURL(blob));
-    setMeetingScreenshots(screenshotUrls);
+    const screenshotObjects = screenshotsDataRef.current.map(data => ({
+      url: URL.createObjectURL(data.blob),
+      timestamp: data.timestamp
+    }));
+    setMeetingScreenshots(screenshotObjects);
 
     // Upload the recorded blob to the existing file upload endpoint
     const clientId = Date.now().toString();
@@ -461,10 +474,13 @@ export default function CreateGame() {
       form.append("file", audioBlob, "live_recording.webm");
       form.append("client_id", clientId);
 
-      // Append screenshots
-      screenshotsRef.current.forEach((blob, idx) => {
-        form.append(`screenshot_${idx}`, blob, `screenshot_${idx}.jpg`);
+      // Append screenshots and their times
+      const timesArray: string[] = [];
+      screenshotsDataRef.current.forEach((data, idx) => {
+        form.append(`screenshot_${idx}`, data.blob, `screenshot_${idx}.jpg`);
+        timesArray.push(data.timestamp);
       });
+      form.append("screenshot_times", JSON.stringify(timesArray));
 
       // Add custom API key and model if enabled
       if (useCustomKey && customApiKey.trim() !== "") {
@@ -800,18 +816,45 @@ export default function CreateGame() {
                       <Camera className="w-4 h-4" /> Meeting Snapshots
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {(meetingScreenshots.length > 0 ? meetingScreenshots : activeSummary.screenshots || []).map((url: string, idx: number) => (
-                        <div key={idx} className="relative group">
-                          <img
-                            src={url}
-                            alt={`Meeting snapshot ${idx + 1}`}
-                            className="w-full rounded-xl border border-gray-100 shadow-sm"
-                          />
-                          <div className="absolute bottom-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded-md">
-                            {idx === 0 ? '📸 Start of Meeting' : '📸 During Meeting'}
+                      {(meetingScreenshots.length > 0 ? meetingScreenshots : activeSummary.screenshots || []).map((shot: any, idx: number) => {
+                        // Handle legacy raw strings if old data exists
+                        let srcUrl = shot;
+                        let timeLabel = idx === 0 ? 'Start of Meeting' : 'During Meeting';
+                        let timestampStr = null;
+                        
+                        // Handle new object structure
+                        if (typeof shot === 'object' && shot !== null) {
+                          srcUrl = shot.data || shot.url;
+                          timestampStr = shot.timestamp;
+                        }
+
+                        return (
+                          <div key={idx} className="relative group">
+                            <div className="rounded-xl border border-gray-100 shadow-sm overflow-hidden bg-white">
+                              <img
+                                src={srcUrl}
+                                alt={`Meeting snapshot ${idx + 1}`}
+                                className="w-full object-cover border-b border-gray-100"
+                              />
+                              <div className="p-3 bg-gray-50 flex items-center justify-between">
+                                <span className="text-xs font-semibold text-gray-700 tracking-wide">📸 {timeLabel}</span>
+                                {timestampStr && (
+                                  <div className="flex items-center gap-2 text-xs text-gray-500 font-medium">
+                                    <span className="flex items-center gap-1">
+                                      <Calendar className="w-3.5 h-3.5" /> 
+                                      {activeSummary?.created_at ? new Date(activeSummary.created_at).toLocaleDateString() : new Date().toLocaleDateString()}
+                                    </span>
+                                    <span className="w-1 h-1 rounded-full bg-gray-300"></span>
+                                    <span className="flex items-center gap-1 text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100 font-mono">
+                                      <Clock className="w-3.5 h-3.5" /> {timestampStr}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}

@@ -4,6 +4,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 import asyncio
 import base64
+import json
 
 from app.services.meet_summary import process_uploaded_file
 from app.api import deps
@@ -28,19 +29,32 @@ async def summarize(
     model_preference: Optional[str] = Form(None),
     screenshot_0: Optional[UploadFile] = File(None),
     screenshot_1: Optional[UploadFile] = File(None),
+    screenshot_times: Optional[str] = Form(None),
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db)
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded")
 
-    # Process screenshots: convert to base64 data URIs
+    # Parse screenshot times
+    times = []
+    if screenshot_times:
+        try:
+            times = json.loads(screenshot_times)
+        except Exception:
+            pass
+
+    # Process screenshots: convert to base64 data URIs and pair with timestamps
     screenshot_data = []
-    for screenshot in [screenshot_0, screenshot_1]:
+    for idx, screenshot in enumerate([screenshot_0, screenshot_1]):
         if screenshot and screenshot.filename:
             raw = await screenshot.read()
             b64 = base64.b64encode(raw).decode('utf-8')
-            screenshot_data.append(f"data:image/jpeg;base64,{b64}")
+            time_str = times[idx] if idx < len(times) else None
+            screenshot_data.append({
+                "data": f"data:image/jpeg;base64,{b64}",
+                "timestamp": time_str
+            })
 
     # Call the ML service
     result = await process_uploaded_file(file, calendar_context, client_id, custom_api_key, model_preference)

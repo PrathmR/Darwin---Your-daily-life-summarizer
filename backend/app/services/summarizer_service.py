@@ -49,6 +49,10 @@ if not ASSEMBLYAI_API_KEY:
 
 aai.settings.api_key = ASSEMBLYAI_API_KEY
 
+# Increase the SDK-wide HTTP timeout so large file uploads don't time out.
+# The default is 30 s which is too short for big audio/video files.
+aai.settings.http_timeout = 300.0  # 5 minutes
+
 GEMINI_API_KEY_PRIMARY = os.getenv("GEMINI_API_KEY_PRIMARY")
 GEMINI_API_KEY_FALLBACK = os.getenv("GEMINI_API_KEY_FALLBACK")
 
