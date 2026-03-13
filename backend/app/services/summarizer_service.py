@@ -138,10 +138,10 @@ Guidelines:
 # ==========================================================
 # GEMINI LLM WRAPPER
 # ==========================================================
-def call_gemini(prompt_text, api_key):
+def call_gemini(prompt_text, api_key, model_name=GEMINI_MODEL):
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
+        model = genai.GenerativeModel(model_name)
 
         response = model.generate_content(prompt_text)
 
@@ -155,18 +155,27 @@ def call_gemini(prompt_text, api_key):
         return None
 
 
-def call_llm(system_prompt, user_input):
+def call_llm(system_prompt, user_input, custom_api_key=None, model_preference=None):
     full_prompt = system_prompt + "\n\n" + user_input
+    
+    # 0. Custom Key
+    if custom_api_key:
+        print(f"🔑 Using custom API key and model: {model_preference}")
+        out = call_gemini(full_prompt, custom_api_key, model_preference or GEMINI_MODEL)
+        if out:
+            return out
+        else:
+            print("❌ Custom API call failed, falling back to default keys.")
 
     # 1. Primary
     if GEMINI_API_KEY_PRIMARY:
-        out = call_gemini(full_prompt, GEMINI_API_KEY_PRIMARY)
+        out = call_gemini(full_prompt, GEMINI_API_KEY_PRIMARY, GEMINI_MODEL)
         if out:
             return out
 
     # 2. Fallback
     if GEMINI_API_KEY_FALLBACK:
-        out = call_gemini(full_prompt, GEMINI_API_KEY_FALLBACK)
+        out = call_gemini(full_prompt, GEMINI_API_KEY_FALLBACK, GEMINI_MODEL)
         if out:
             return out
 
@@ -200,8 +209,8 @@ def transcribe_with_ai(file_path):
 # ==========================================================
 # FACT EXTRACTION
 # ==========================================================
-def extract_facts(text):
-    out = call_llm(SYSTEM_PROMPT_FACTS, text)
+def extract_facts(text, custom_api_key=None, model_preference=None):
+    out = call_llm(SYSTEM_PROMPT_FACTS, text, custom_api_key, model_preference)
     if not out:
         return {}
 
@@ -214,8 +223,8 @@ def extract_facts(text):
 # ==========================================================
 # TOPIC EXTRACTION
 # ==========================================================
-def extract_topic(text):
-    out = call_llm(SYSTEM_PROMPT_TOPIC, text)
+def extract_topic(text, custom_api_key=None, model_preference=None):
+    out = call_llm(SYSTEM_PROMPT_TOPIC, text, custom_api_key, model_preference)
     if not out:
         return "Meeting Summary"
     return out.strip()
@@ -240,7 +249,7 @@ def clean_summary(text):
     # Split text into lines, clean each line, then rejoin.
     # This preserves the newlines that separate bullet points.
     lines = text.split('\n')
-    cleaned_lines = []
+    cleaned_lines: list = []
     for line in lines:
         # Replace multiple spaces/tabs *within* a line, and strip ends
         cleaned_line = re.sub(r'[ \t]+', ' ', line).strip()
@@ -288,7 +297,7 @@ def extract_speaker_segments(transcript):
     if not utterances:
         return {}
 
-    segments = {}
+    segments: dict = {}
     fallback_index = 1
 
     for utt in utterances:
@@ -355,7 +364,7 @@ def _fallback_speaker_summaries(speaker_segments):
     return summaries
 
 
-def summarize_speakers(speaker_segments, transcript_text):
+def summarize_speakers(speaker_segments, transcript_text, custom_api_key=None, model_preference=None):
     if not speaker_segments:
         return []
 
@@ -368,7 +377,7 @@ def summarize_speakers(speaker_segments, transcript_text):
         f"Full transcript word count: {len(transcript_text.split())}"
     )
 
-    raw = call_llm(SYSTEM_PROMPT_SPEAKER_BREAKDOWN, user_input)
+    raw = call_llm(SYSTEM_PROMPT_SPEAKER_BREAKDOWN, user_input, custom_api_key, model_preference)
     summaries = _parse_speaker_summary_response(raw)
     if summaries:
         return summaries
@@ -439,7 +448,7 @@ def build_pdf(folder, base_name, main_topic, summary_text, facts):
         bulletIndent=0.2 * inch
     )
 
-    story = []
+    story: list = []
 
     # ----- TITLE -----
     story.append(Paragraph(clean_title_spacing(main_topic), title_style))
@@ -468,7 +477,7 @@ def build_pdf(folder, base_name, main_topic, summary_text, facts):
     ]
 
     # Find where the sections start to skip the overview
-    start_index = -1
+    start_index: int = -1
     for idx, line in enumerate(lines):
         if line in sections:
             start_index = idx
@@ -488,19 +497,16 @@ def build_pdf(folder, base_name, main_topic, summary_text, facts):
         return pdf_path
 
     # Start the loop AT the first section
-    i = start_index
-    while i < len(lines):
+    for i in range(start_index, len(lines)):
         line = lines[i]
 
         if line in sections:
             # It's a heading
             story.append(Paragraph(line, h2))
-            i += 1
             continue
 
         # If it's not a heading, it's a bullet point
         story.append(Paragraph("• " + line.strip("()"), bullet))
-        i += 1
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
     return pdf_path
@@ -549,7 +555,7 @@ def save_outputs(transcript, file_path, summary, facts, speaker_summaries):
 # ==========================================================
 # PROCESS FILE (USED BY FASTAPI)
 # ==========================================================
-def process_file(path, calendar_context=None, progress_callback=None):
+def process_file(path, calendar_context=None, progress_callback=None, custom_api_key=None, model_preference=None):
     ext = os.path.splitext(path)[1].lower()
     temp_audio = None
 
@@ -578,8 +584,12 @@ def process_file(path, calendar_context=None, progress_callback=None):
         enriched_text = context_prefix + transcript_text
 
         if progress_callback: progress_callback("Extracting meeting facts and insights...")
-        facts = extract_facts(enriched_text)
-        speaker_summaries = []
+        facts = extract_facts(enriched_text, custom_api_key, model_preference)
+        
+        # Speaker Summaries
+        if progress_callback: progress_callback("Analyzing speaker contributions...")
+        speaker_segments = extract_speaker_segments(transcript)
+        speaker_summaries = summarize_speakers(speaker_segments, transcript_text, custom_api_key, model_preference)
 
         # Dynamic prompt: longer overview for long transcripts
         word_count = len(transcript_text.split())
@@ -598,7 +608,7 @@ def process_file(path, calendar_context=None, progress_callback=None):
         )
 
         if progress_callback: progress_callback("Generating structured summary with Gemini...")
-        summary_raw = call_llm(dynamic_summary_prompt, enriched_text)
+        summary_raw = call_llm(dynamic_summary_prompt, enriched_text, custom_api_key, model_preference)
         summary_clean = clean_summary(summary_raw)
 
         if speaker_summaries:
@@ -608,7 +618,7 @@ def process_file(path, calendar_context=None, progress_callback=None):
                     f"{summary_clean}\n\nSpeaker Contributions\n{speaker_section}"
                 )
 
-        topic = extract_topic(enriched_text)
+        topic = extract_topic(enriched_text, custom_api_key, model_preference)
         if isinstance(facts, dict):
             facts["meeting_topic"] = topic
 
@@ -623,7 +633,7 @@ def process_file(path, calendar_context=None, progress_callback=None):
 # ==========================================================
 # PROCESS TEXT ONLY (FOR LIVE RECORDINGS)
 # ==========================================================
-def process_text(transcript_text: str, calendar_context=None, progress_callback=None):
+def process_text(transcript_text: str, calendar_context=None, progress_callback=None, custom_api_key=None, model_preference=None):
     # We do not have speaker diaries from RealtimeTranscriber yet without specific configs, 
     # but we can pass the raw text to the same pipeline.
     
@@ -635,7 +645,7 @@ def process_text(transcript_text: str, calendar_context=None, progress_callback=
     enriched_text = context_prefix + transcript_text
 
     if progress_callback: progress_callback("Extracting meeting facts and insights...")
-    facts = extract_facts(enriched_text)
+    facts = extract_facts(enriched_text, custom_api_key, model_preference)
     speaker_summaries = [] # live string typically doesn't have diarization out of the box in simple streaming
 
     # Dynamic prompt: longer overview for long transcripts
@@ -655,10 +665,10 @@ def process_text(transcript_text: str, calendar_context=None, progress_callback=
     )
 
     if progress_callback: progress_callback("Generating structured summary with Gemini...")
-    summary_raw = call_llm(dynamic_summary_prompt, enriched_text)
+    summary_raw = call_llm(dynamic_summary_prompt, enriched_text, custom_api_key, model_preference)
     summary_clean = clean_summary(summary_raw)
 
-    topic = extract_topic(enriched_text)
+    topic = extract_topic(enriched_text, custom_api_key, model_preference)
     if isinstance(facts, dict):
         facts["meeting_topic"] = topic
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Upload, FileAudio, ArrowLeft, Download, FileText, Sparkles, Clock, Trash2, Calendar, Mic, Square } from "lucide-react";
+import { Upload, FileAudio, ArrowLeft, Download, FileText, Sparkles, Clock, Trash2, Calendar, Mic, Square, KeyRound } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 
@@ -60,12 +60,12 @@ function exportAsWord(summaryText: string, title: string) {
       <h1 style="text-align:center; color:#333;">${title}</h1>
       <hr/>
       ${summaryText.split("\n").map((line) => {
-          const l = line.trim();
-          if (!l) return "";
-          if (["Executive Overview", "Main Discussion Points", "Decisions Taken", "Action Items", "Unresolved Questions", "Speaker Contributions"].includes(l))
-            return `<h2 style="color:#059669; margin-top:18px;">${l}</h2>`;
-          return `<p style="margin:4px 0;">${l}</p>`;
-        }).join("")}
+    const l = line.trim();
+    if (!l) return "";
+    if (["Executive Overview", "Main Discussion Points", "Decisions Taken", "Action Items", "Unresolved Questions", "Speaker Contributions"].includes(l))
+      return `<h2 style="color:#059669; margin-top:18px;">${l}</h2>`;
+    return `<p style="margin:4px 0;">${l}</p>`;
+  }).join("")}
     </body></html>`;
   const blob = new Blob([html], { type: "application/msword" });
   const a = document.createElement("a");
@@ -80,11 +80,11 @@ function exportAsPdf(summaryText: string, title: string) {
   if (!printWindow) return;
   const headings = ["Executive Overview", "Main Discussion Points", "Decisions Taken", "Action Items", "Unresolved Questions", "Speaker Contributions"];
   const bodyHtml = summaryText.split("\n").map((line) => {
-      const l = line.trim();
-      if (!l) return "";
-      if (headings.includes(l)) return `<h2 style="color:#059669;margin-top:20px;font-size:18px;">${l}</h2>`;
-      return `<p style="margin:4px 0;font-size:14px;line-height:1.6;">${l}</p>`;
-    }).join("");
+    const l = line.trim();
+    if (!l) return "";
+    if (headings.includes(l)) return `<h2 style="color:#059669;margin-top:20px;font-size:18px;">${l}</h2>`;
+    return `<p style="margin:4px 0;font-size:14px;line-height:1.6;">${l}</p>`;
+  }).join("");
 
   printWindow.document.write(`
     <html><head>
@@ -117,6 +117,12 @@ export default function CreateGame() {
   const [calendarConnected, setCalendarConnected] = useState(false);
   const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
+
+  // API Key Settings State
+  const [useCustomKey, setUseCustomKey] = useState(false);
+  const [customApiKey, setCustomApiKey] = useState("");
+  const [selectedModel, setSelectedModel] = useState("gemini-1.5-pro");
+  const [showSettings, setShowSettings] = useState(false);
 
   // Live Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -196,19 +202,19 @@ export default function CreateGame() {
   }
 
   useEffect(() => {
-    return () => { 
-      if (wsRef.current) wsRef.current.close(); 
+    return () => {
+      if (wsRef.current) wsRef.current.close();
     };
   }, []);
 
   async function handleUpload() {
     if (!file) { toast({ title: "Select a file first", variant: "destructive" }); return; }
-    
+
     const clientId = Date.now().toString();
     const wsUrl = BACKEND_URL.replace("http", "ws") + `/ws/progress/${clientId}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
-    
+
     ws.onmessage = (event) => {
       setLoadingMsg(event.data);
     };
@@ -223,8 +229,15 @@ export default function CreateGame() {
       };
       form.append("calendar_context", JSON.stringify(context));
     }
+
+    // Add custom API key and model if enabled
+    if (useCustomKey && customApiKey.trim() !== "") {
+      form.append("custom_api_key", customApiKey);
+      form.append("model_preference", selectedModel);
+    }
+
     form.append("client_id", clientId);
-    
+
     setLoading(true);
     setLoadingMsg("Uploading file...");
     setActiveSummary(null);
@@ -237,7 +250,7 @@ export default function CreateGame() {
       });
       if (!res.ok) throw new Error("Failed");
       const data = await res.json();
-      
+
       const newSummary = {
         id: data.summary_id,
         filename: file.name,
@@ -246,7 +259,7 @@ export default function CreateGame() {
         facts: data.output.facts,
         speaker_summaries: data.output.speaker_summaries
       };
-      
+
       setActiveSummary(newSummary);
       setHistory(prev => [newSummary, ...prev]);
       setFile(null);
@@ -284,7 +297,7 @@ export default function CreateGame() {
 
       // Immediately discard the video track — we only want audio
       stream.getVideoTracks().forEach(track => track.stop());
-      
+
       // Create a new stream with only audio tracks
       const audioOnlyStream = new MediaStream(audioTracks);
       streamRef.current = stream;
@@ -358,6 +371,13 @@ export default function CreateGame() {
       const form = new FormData();
       form.append("file", audioBlob, "live_recording.webm");
       form.append("client_id", clientId);
+
+      // Add custom API key and model if enabled
+      if (useCustomKey && customApiKey.trim() !== "") {
+        form.append("custom_api_key", customApiKey);
+        form.append("model_preference", selectedModel);
+      }
+
       if (selectedEvent) {
         const context = {
           topic: selectedEvent.summary,
@@ -412,9 +432,8 @@ export default function CreateGame() {
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             <button
               onClick={() => { setActiveSummary(null); setFile(null); }}
-              className={`w-full text-left px-4 py-3 rounded-xl border transition-all flex items-center gap-3 shadow-sm ${
-                !activeSummary && !loading ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700" : "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
-              }`}
+              className={`w-full text-left px-4 py-3 rounded-xl border transition-all flex items-center gap-3 shadow-sm ${!activeSummary && !loading ? "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700" : "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100"
+                }`}
             >
               <Upload className="w-4 h-4 shrink-0" />
               <span className="text-sm font-semibold">New Summarization</span>
@@ -429,11 +448,10 @@ export default function CreateGame() {
                 <button
                   key={item.id}
                   onClick={() => setActiveSummary(item)}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all group ${
-                    activeSummary?.id === item.id 
-                      ? "bg-white border-emerald-300 shadow-sm ring-1 ring-emerald-500/20" 
+                  className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all group ${activeSummary?.id === item.id
+                      ? "bg-white border-emerald-300 shadow-sm ring-1 ring-emerald-500/20"
                       : "bg-white border-gray-100 hover:border-gray-300 hover:bg-gray-50 text-gray-600"
-                  }`}
+                    }`}
                 >
                   <p className={`text-sm font-medium truncate mb-1 ${activeSummary?.id === item.id ? "text-emerald-700" : "text-gray-800"}`}>
                     {item.filename}
@@ -445,12 +463,28 @@ export default function CreateGame() {
               ))
             )}
           </div>
+
+          {/* Settings Toggle at Bottom of Sidebar */}
+          <div className="p-4 border-t border-gray-100 bg-gray-50/50">
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all flex items-center justify-between shadow-sm ${showSettings
+                  ? "bg-slate-800 text-white border-slate-700"
+                  : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"
+                }`}
+            >
+              <span className="flex items-center gap-2 text-sm font-medium">
+                <KeyRound className="w-4 h-4" />
+                API Configuration
+              </span>
+            </button>
+          </div>
         </div>
 
         {/* Main Content Area */}
         <div className="flex-1 overflow-y-auto p-6 md:p-10 w-full relative">
           <div className="max-w-4xl mx-auto w-full">
-            
+
             {/* Upload Area */}
             {!activeSummary && !loading && !isRecording && (
               <div className="mt-10">
@@ -462,20 +496,19 @@ export default function CreateGame() {
                     onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                     onDragLeave={() => setDragOver(false)}
                     onDrop={handleDrop}
-                    className={`flex flex-col items-center justify-center border-2 border-dashed rounded-2xl p-10 cursor-pointer transition-all duration-200 ${
-                      dragOver ? "border-emerald-500 bg-emerald-50" : file ? "border-emerald-300 bg-emerald-50/50" : "border-gray-300 bg-white hover:border-emerald-400 hover:bg-emerald-50/30"
-                    }`}
+                    className={`flex flex-col items-center justify-center border-2 border-dashed rounded-2xl p-10 cursor-pointer transition-all duration-200 ${dragOver ? "border-emerald-500 bg-emerald-50" : file ? "border-emerald-300 bg-emerald-50/50" : "border-gray-300 bg-white hover:border-emerald-400 hover:bg-emerald-50/30"
+                      }`}
                   >
                     <FileAudio className={`w-10 h-10 mb-3 ${file ? "text-emerald-600" : "text-gray-400"}`} />
                     <span className="text-sm text-gray-600 mb-1">{file ? file.name : "Drag & drop an audio/video file, or click to browse"}</span>
                     {file && <span className="text-xs text-gray-400">{(file.size / 1024 / 1024).toFixed(1)} MB</span>}
                     <input type="file" className="hidden" accept="audio/*,video/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
                   </label>
-                  
+
                   <div className="w-full">
                     {!calendarConnected ? (
                       <button type="button" onClick={connectCalendar} className="text-sm bg-white border px-4 py-2 rounded-xl border-gray-200 outline-none flex items-center gap-2 hover:bg-gray-50 text-gray-700 w-full justify-center transition-colors shadow-sm">
-                        <Calendar className="w-4 h-4 text-emerald-600"/> Auto-fill meeting details using Google Calendar
+                        <Calendar className="w-4 h-4 text-emerald-600" /> Auto-fill meeting details using Google Calendar
                       </button>
                     ) : (
                       <select className="w-full p-3 border border-emerald-300 bg-emerald-50 rounded-xl text-sm outline-none text-emerald-900 shadow-sm" onChange={(e) => setSelectedEvent(calendarEvents.find(ev => ev.id === e.target.value))}>
@@ -502,6 +535,78 @@ export default function CreateGame() {
                       <Mic className="w-4 h-4" /> Record Live
                     </button>
                   </div>
+
+                  {/* API Configuration Settings Panel */}
+                  {showSettings && (
+                    <div className="mt-6 bg-white border border-gray-200 rounded-2xl p-6 shadow-sm animate-fade-in relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-2 h-full bg-slate-800"></div>
+                      <h3 className="text-lg font-bold text-gray-800 mb-1 flex items-center gap-2">
+                        <KeyRound className="w-5 h-5 text-slate-700" /> API Configuration
+                      </h3>
+                      <p className="text-sm text-gray-500 mb-5">
+                        Choose to use our default models or provide your own API key for custom rate limits.
+                      </p>
+
+                      <div className="space-y-5">
+                        <label className="flex items-center gap-3 cursor-pointer group">
+                          <div className="relative flex items-center">
+                            <input
+                              type="checkbox"
+                              checked={useCustomKey}
+                              onChange={(e) => setUseCustomKey(e.target.checked)}
+                              className="peer sr-only"
+                            />
+                            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-slate-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-slate-800"></div>
+                          </div>
+                          <span className="text-sm font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
+                            I have my own API key
+                          </span>
+                        </label>
+
+                        <div className={`space-y-4 transition-all duration-300 origin-top overflow-hidden ${useCustomKey ? 'max-h-[500px] opacity-100 mt-4' : 'max-h-0 opacity-0 m-0'}`}>
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5 list-none">
+                              Select Model
+                            </label>
+                            <select
+                              value={selectedModel}
+                              onChange={(e) => setSelectedModel(e.target.value)}
+                              className="w-full p-2.5 border border-gray-200 bg-gray-50 rounded-xl text-sm outline-none text-gray-800 focus:border-slate-500 focus:ring-1 focus:ring-slate-500 transition-all font-medium"
+                            >
+                              <option value="gemini-1.5-pro">Gemini 1.5 Pro (Recommended)</option>
+                              <option value="gemini-1.5-flash">Gemini 1.5 Flash (Faster)</option>
+                              <option value="gemini-1.0-pro">Gemini 1.0 Pro</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5 flex justify-between">
+                              API Key
+                            </label>
+                            <input
+                              type="password"
+                              value={customApiKey}
+                              onChange={(e) => setCustomApiKey(e.target.value)}
+                              placeholder="Enter your API Key (e.g. AIzaSy...)"
+                              className="w-full p-2.5 border border-gray-200 bg-white rounded-xl text-sm outline-none text-gray-800 focus:border-slate-500 focus:ring-1 focus:ring-slate-500 transition-all"
+                            />
+                            {customApiKey && customApiKey.length < 20 && (
+                              <p className="text-xs text-amber-600 mt-1.5 flex items-center gap-1">
+                                ⚠ This API key looks too short to be valid.
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 flex items-start gap-2">
+                            <span className="text-slate-500 mt-0.5">ℹ️</span>
+                            <p className="text-[11px] text-slate-600 leading-relaxed">
+                              Your API key is only used during the current session and sent securely to the server. It is <strong>not</strong> stored permanently in our database.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -652,7 +757,7 @@ export default function CreateGame() {
                 )}
               </div>
             )}
-            
+
           </div>
         </div>
       </div>
