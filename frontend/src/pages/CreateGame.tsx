@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Upload, FileAudio, ArrowLeft, Download, FileText, Sparkles, Clock, Trash2, Calendar, Mic, Square, KeyRound, Camera } from "lucide-react";
+import { Upload, FileAudio, ArrowLeft, Download, FileText, Sparkles, Clock, Trash2, Calendar, Mic, Square, KeyRound, Users, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 
@@ -16,7 +16,17 @@ function parseSummary(raw: string): { overview: string; sections: SummarySection
   const sections: SummarySection[] = [];
   const headings = [
     "Executive Overview", "Main Discussion Points", "Decisions Taken",
-    "Action Items", "Unresolved Questions", "Speaker Contributions"
+    "Action Items", "Unresolved Questions", "Speaker Contributions",
+    // Standup
+    "Daily Stand-Up Report", "Team Members", "Yesterday's Progress", "Today's Plan", "Blockers", "Sprint Progress Summary",
+    // Project Sync
+    "Project Status Report", "Project Name", "Meeting Date", "Project Updates", "Milestones Achieved", "Pending Tasks", "Assigned Responsibilities", "Deadlines", "Risks / Challenges",
+    // Clinical
+    "Session Metadata", "AI Session Summary", "Subjective (S)", "Objective (O)", "Assessment (A)", "Plan (P)", "Medications", "Diagnoses (DSM/ICD)", "Safety & Risk Management", "Next Appointment", "Audit Trail",
+    // Retrospective
+    "Sprint Retrospective Report", "Sprint Number", "What Went Well", "What Didn't Go Well", "Lessons Learned", "Improvement Actions", "Next Sprint Goals",
+    // Sales
+    "Client Meeting Summary", "Client Name", "Client Requirements", "Discussion Highlights", "Decisions", "Commitments Made", "Follow-Up Actions"
   ];
 
   let currentSection: SummarySection | null = null;
@@ -123,6 +133,10 @@ export default function CreateGame() {
   const [customApiKey, setCustomApiKey] = useState("");
   const [selectedModel, setSelectedModel] = useState("gemini-1.5-pro");
   const [showSettings, setShowSettings] = useState(false);
+
+  // Meeting Role & Summary Format
+  const [meetingRole, setMeetingRole] = useState("general");
+  const [summaryFormat, setSummaryFormat] = useState("default");
 
   // Live Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -243,6 +257,8 @@ export default function CreateGame() {
     }
 
     form.append("client_id", clientId);
+    form.append("meeting_role", meetingRole);
+    form.append("summary_format", summaryFormat);
 
     setLoading(true);
     setLoadingMsg("Uploading file...");
@@ -497,6 +513,9 @@ export default function CreateGame() {
         form.append("calendar_context", JSON.stringify(context));
       }
 
+      form.append("meeting_role", meetingRole);
+      form.append("summary_format", summaryFormat);
+
       const res = await fetch(`${BACKEND_URL}/api/meet-summary`, {
         method: "POST",
         credentials: "include",
@@ -599,7 +618,42 @@ export default function CreateGame() {
             {!activeSummary && !loading && !isRecording && (
               <div className="mt-10">
                 <h1 className="text-3xl font-bold text-center mb-2">Meeting Summarizer</h1>
-                <p className="text-gray-500 text-center mb-10 text-sm">Upload your meeting recording and let AI do the rest.</p>
+                <p className="text-gray-500 text-center mb-6 text-sm">Upload your meeting recording and let AI do the rest.</p>
+
+                {/* Role & Format Selectors */}
+                <div className="grid grid-cols-2 gap-4 max-w-2xl mx-auto mb-6">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Your Meeting Role</label>
+                    <select
+                      value={meetingRole}
+                      onChange={(e) => setMeetingRole(e.target.value)}
+                      className="w-full p-2.5 border border-gray-200 bg-white rounded-xl text-sm outline-none text-gray-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
+                    >
+                      <option value="general">General (Default)</option>
+                      <option value="project_manager">Project Manager</option>
+                      <option value="software_pm">Software Team Lead / Scrum Master</option>
+                      <option value="researcher">Researcher / Professor</option>
+                      <option value="psychiatrist">Psychiatrist / Therapist</option>
+                      <option value="standup_conductor">Daily Stand-Up Conductor</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Output Summary Format</label>
+                    <select
+                      value={summaryFormat}
+                      onChange={(e) => setSummaryFormat(e.target.value)}
+                      className="w-full p-2.5 border border-gray-200 bg-white rounded-xl text-sm outline-none text-gray-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
+                    >
+                      <option value="default">Standard Overview (Default)</option>
+                      <option value="standup">Daily Stand-Up Insights</option>
+                      <option value="project_sync">Project Progress / Status Sync</option>
+                      <option value="clinical">Clinical Session Notes (SOAP)</option>
+                      <option value="retrospective">Agile Sprint Retrospective</option>
+                      <option value="sales">Client / Sales Meeting</option>
+                    </select>
+                  </div>
+                </div>
+
                 <div className="space-y-4 max-w-2xl mx-auto">
                   <label
                     ref={dropRef}
@@ -612,7 +666,7 @@ export default function CreateGame() {
                     <FileAudio className={`w-10 h-10 mb-3 ${file ? "text-emerald-600" : "text-gray-400"}`} />
                     <span className="text-sm text-gray-600 mb-1">{file ? file.name : "Drag & drop an audio/video file, or click to browse"}</span>
                     {file && <span className="text-xs text-gray-400">{(file.size / 1024 / 1024).toFixed(1)} MB</span>}
-                    <input type="file" className="hidden" accept="audio/*,video/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                    <input type="file" className="hidden" accept="audio/*,video/*,.txt" onChange={(e) => setFile(e.target.files?.[0] || null)} />
                   </label>
 
                   <div className="w-full">
@@ -813,7 +867,7 @@ export default function CreateGame() {
                 {(meetingScreenshots.length > 0 || activeSummary.screenshots?.length > 0) && (
                   <div className="bg-white border border-gray-200 rounded-2xl p-6 md:p-8 shadow-sm">
                     <h3 className="text-sm font-bold uppercase tracking-wide text-gray-500 mb-4 flex items-center gap-2">
-                      <Camera className="w-4 h-4" /> Meeting Snapshots
+                      <FileText className="w-4 h-4" /> Meeting Snapshots
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {(meetingScreenshots.length > 0 ? meetingScreenshots : activeSummary.screenshots || []).map((shot: any, idx: number) => {

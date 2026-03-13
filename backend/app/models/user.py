@@ -23,6 +23,7 @@ class User(Base):
     email_verification_token_expires_at = Column(DateTime, nullable=True)
 
     refresh_token_version = Column(Integer, default=0, nullable=False)
+    meeting_role = Column(String, default="general", nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

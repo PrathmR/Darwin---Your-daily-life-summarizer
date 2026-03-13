@@ -63,32 +63,46 @@ if not GEMINI_API_KEY_PRIMARY:
 # GEMINI MODEL
 # ==========================================================
 GEMINI_MODEL = "gemini-2.5-flash"
+LONG_TRANSCRIPT_THRESHOLD_WORDS = 3000
 
 # ==========================================================
-# PROMPTS — A2 MODE (NO MARKDOWN)
+# FORMAT TEMPLATES
 # ==========================================================
-SYSTEM_PROMPT_SUMMARY = """
+FORMAT_TEMPLATES = {
+    "default": {
+        "description": "Executive Overview\n(3–4 lines of clear prose)\n\nMain Discussion Points\n(point 1)\n(point 2)\n(point 3)\n\nDecisions Taken\n(decision 1)\n\nAction Items\n(person — task)\n(person — task)\n\nUnresolved Questions\n(question 1)",
+        "headings": ["Executive Overview", "Main Discussion Points", "Decisions Taken", "Action Items", "Unresolved Questions", "Speaker Contributions"]
+    },
+    "standup": {
+        "description": "Daily Stand-Up Report\n\nTeam Members\n(member 1)\n(member 2)\n\nYesterday's Progress\n(Member A — task)\n(Member B — task)\n\nToday's Plan\n(Member A — task)\n(Member B — task)\n\nBlockers\n(blocker 1)\n\nSprint Progress Summary\n(component — status)",
+        "headings": ["Daily Stand-Up Report", "Team Members", "Yesterday's Progress", "Today's Plan", "Blockers", "Sprint Progress Summary", "Speaker Contributions"]
+    },
+    "project_sync": {
+        "description": "Project Status Report\n\nProject Name\n(name)\n\nMeeting Date\n(date)\n\nProject Updates\n(update 1)\n\nMilestones Achieved\n(milestone 1)\n\nPending Tasks\n(task 1)\n\nAssigned Responsibilities\n(person — responsibility)\n\nDeadlines\n(deadline 1)\n\nRisks / Challenges\n(risk 1)",
+        "headings": ["Project Status Report", "Project Name", "Meeting Date", "Project Updates", "Milestones Achieved", "Pending Tasks", "Assigned Responsibilities", "Deadlines", "Risks / Challenges", "Speaker Contributions"]
+    },
+    "clinical": {
+        "description": "Session Metadata\n(patient ID, clinician name, date, time, duration)\n\nAI Session Summary\n(concise overview of key themes and outcomes)\n\nSubjective (S)\n(patient-reported symptoms, feelings, experiences)\n\nObjective (O)\n(clinician-observed behaviors, physical signs)\n\nAssessment (A)\n(professional evaluation based on S and O)\n\nPlan (P)\n(recommended treatment plan, therapy strategies, follow-up actions)\n\nMedications\n(details of prescribed medications, dosage adjustments)\n\nDiagnoses (DSM/ICD)\n(clinical diagnosis coded)\n\nSafety & Risk Management\n(evaluation of potential risks, self-harm, etc.)\n\nNext Appointment\n(scheduled follow-up session timeline)\n\nAudit Trail\n(record of note creation/editing)",
+        "headings": ["Session Metadata", "AI Session Summary", "Subjective (S)", "Objective (O)", "Assessment (A)", "Plan (P)", "Medications", "Diagnoses (DSM/ICD)", "Safety & Risk Management", "Next Appointment", "Audit Trail", "Speaker Contributions"]
+    },
+    "retrospective": {
+        "description": "Sprint Retrospective Report\n\nSprint Number\n(number)\n\nTeam Members\n(member 1)\n\nWhat Went Well\n(item 1)\n\nWhat Didn't Go Well\n(item 1)\n\nLessons Learned\n(item 1)\n\nImprovement Actions\n(item 1)\n\nNext Sprint Goals\n(item 1)",
+        "headings": ["Sprint Retrospective Report", "Sprint Number", "Team Members", "What Went Well", "What Didn't Go Well", "Lessons Learned", "Improvement Actions", "Next Sprint Goals", "Speaker Contributions"]
+    },
+    "sales": {
+        "description": "Client Meeting Summary\n\nClient Name\n(name)\n\nMeeting Date\n(date)\n\nClient Requirements\n(requirement 1)\n\nDiscussion Highlights\n(highlight 1)\n\nDecisions\n(decision 1)\n\nCommitments Made\n(commitment 1)\n\nFollow-Up Actions\n(team/person — action)",
+        "headings": ["Client Meeting Summary", "Client Name", "Meeting Date", "Client Requirements", "Discussion Highlights", "Decisions", "Commitments Made", "Follow-Up Actions", "Speaker Contributions"]
+    }
+}
+
+def get_system_prompt_summary(format_type: str) -> str:
+    template = FORMAT_TEMPLATES.get(format_type, FORMAT_TEMPLATES["default"])
+    return f"""
 You are an expert meeting analyst.
 
 Generate a plain text meeting summary with these exact sections:
 
-Executive Overview
-(3–4 lines of clear prose)
-
-Main Discussion Points
-(point 1)
-(point 2)
-(point 3)
-
-Decisions Taken
-(decision 1)
-
-Action Items
-(person — task)
-(person — task)
-
-Unresolved Questions
-(question 1)
+{template["description"]}
 
 RULES:
 - NO markdown symbols.
@@ -213,8 +227,10 @@ def transcribe_with_ai(file_path):
 # ==========================================================
 # FACT EXTRACTION
 # ==========================================================
-def extract_facts(text, custom_api_key=None, model_preference=None):
-    out = call_llm(SYSTEM_PROMPT_FACTS, text, custom_api_key, model_preference)
+def extract_facts(text, custom_api_key=None, model_preference=None, meeting_role=None):
+    role_instruction = get_role_instructions(meeting_role)["facts"]
+    prompt = SYSTEM_PROMPT_FACTS + f"\n\nROLE CONTEXT: {role_instruction}"
+    out = call_llm(prompt, text, custom_api_key, model_preference)
     if not out:
         return {}
 
@@ -222,6 +238,44 @@ def extract_facts(text, custom_api_key=None, model_preference=None):
         return json.loads(out)
     except:
         return {"raw": out}
+
+
+# ==========================================================
+# ROLE-BASED PROMPT INJECTIONS
+# ==========================================================
+def get_role_instructions(role: str) -> dict:
+    default_role = {
+        "summary": "Focus on the general meeting flow, key discussion points, and standard action items.",
+        "facts": "Extract standard action items, decisions, and participants without any specific role bias."
+    }
+    
+    if not role or role == "general":
+        return default_role
+    
+    roles = {
+        "project_manager": {
+            "summary": "You are a Project Manager condensing this meeting. Emphasize project timelines, blockers, clear ownership of action items, and risks discussed.",
+            "facts": "Focus heavily on extracting concrete deliverables, deadlines, and who is blocked by whom. Ignore minor technical tangents."
+        },
+        "software_pm": {
+            "summary": "You are a Software PM / Scrum Master. Emphasize sprint progress, Jira ticket mentions, technical blockers, PR reviews, and feature requirements.",
+            "facts": "Extract specific feature names, PR numbers, technical constraints, and developer assignments. Structure action items tightly around code/deployment tasks."
+        },
+        "researcher": {
+            "summary": "You are a Researcher summarizing this discussion. Highlight hypotheses, methodologies, data points cited, and logical conclusions.",
+            "facts": "Extract data points, citations, novel ideas, and questions that require further investigation."
+        },
+        "psychiatrist": {
+            "summary": "You are a Psychiatrist or Therapist making clinical notes. Emphasize patient mood, reported symptoms, behavioral observations, and treatment plans.",
+            "facts": "Extract prescribed medications, emotional state markers, side effects discussed, and the concrete plan for the next session."
+        },
+        "standup_conductor": {
+            "summary": "You are running a Daily Standup. Quickly summarize what was accomplished yesterday, what is planned for today, and any blockers (the Three Questions).",
+            "facts": "Extract ONLY what people did, what they will do, and what is blocking them. Keep it extremely brief."
+        }
+    }
+    
+    return roles.get(role, default_role)
 
 
 # ==========================================================
@@ -243,7 +297,7 @@ def clean_title_spacing(title):
 # ==========================================================
 # CLEAN SUMMARY TEXT (A2 MODE)
 # ==========================================================
-def clean_summary(text):
+def clean_summary(text, format_type="default"):
     if not text:
         return ""
 
@@ -251,11 +305,9 @@ def clean_summary(text):
     text = text.replace("*", "").replace("#", "")
 
     # Split text into lines, clean each line, then rejoin.
-    # This preserves the newlines that separate bullet points.
     lines = text.split('\n')
     cleaned_lines: list = []
     for line in lines:
-        # Replace multiple spaces/tabs *within* a line, and strip ends
         cleaned_line = re.sub(r'[ \t]+', ' ', line).strip()
         cleaned_lines.append(cleaned_line)
 
@@ -263,12 +315,10 @@ def clean_summary(text):
     text = "\n".join(l for l in cleaned_lines if l)
 
     # Ensure headings are separated by newlines
-    text = re.sub(r"(Executive Overview)", r"\n\1\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"(Main Discussion Points)", r"\n\1\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"(Decisions Taken)", r"\n\1\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"(Action Items)", r"\n\1\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"(Unresolved Questions)", r"\n\1\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"(Speaker Contributions)", r"\n\1\n", text, flags=re.IGNORECASE)
+    headings = FORMAT_TEMPLATES.get(format_type, FORMAT_TEMPLATES["default"])["headings"]
+    for heading in headings:
+        regex_heading = re.escape(heading)
+        text = re.sub(rf"({regex_heading})", r"\n\1\n", text, flags=re.IGNORECASE)
 
     # Clean up any triple newlines this may have created
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -559,26 +609,53 @@ def save_outputs(transcript, file_path, summary, facts, speaker_summaries):
 # ==========================================================
 # PROCESS FILE (USED BY FASTAPI)
 # ==========================================================
-def process_file(path, calendar_context=None, progress_callback=None, custom_api_key=None, model_preference=None):
+def process_file(path, calendar_context=None, progress_callback=None, custom_api_key=None, model_preference=None, meeting_role=None, summary_format="default"):
     ext = os.path.splitext(path)[1].lower()
     temp_audio = None
 
-    try:
-        if ext in [".mp4", ".mov", ".avi", ".mkv"]:
-            print("🎬 Extracting audio...")
-            if progress_callback: progress_callback("Extracting audio from video...")
-            temp_audio = os.path.join(UPLOAD_DIR, f"temp_{datetime.now().timestamp()}.mp3")
-            with VideoFileClip(path) as v:
-                if not v.audio:
-                    raise Exception("No audio track in video.")
-                v.audio.write_audiofile(temp_audio, logger=None)
-            ai_input = temp_audio
-        else:
-            ai_input = path
+    class MockTranscript:
+        def __init__(self, text, utterances=None):
+            self.text = text
+            self.utterances = utterances
 
-        if progress_callback: progress_callback("Transcribing with AssemblyAI...")
-        transcript = transcribe_with_ai(ai_input)
-        transcript_text = transcript.text
+    try:
+        if ext == ".txt":
+            print("📄 Text file detected. Skipping transcription...")
+            if progress_callback: progress_callback("Reading text transcript...")
+            with open(path, "r", encoding="utf-8") as f:
+                transcript_text = f.read()
+            transcript = MockTranscript(transcript_text)
+        else:
+            if ext in [".mp4", ".mov", ".avi", ".mkv"]:
+                print("🎬 Extracting audio...")
+                if progress_callback: progress_callback("Extracting audio from video...")
+                temp_audio = os.path.join(UPLOAD_DIR, f"temp_{datetime.now().timestamp()}.mp3")
+                with VideoFileClip(path) as v:
+                    if not v.audio:
+                        raise Exception("No audio track in video.")
+                    v.audio.write_audiofile(temp_audio, logger=None)
+                ai_input = temp_audio
+            else:
+                ai_input = path
+
+            if progress_callback: progress_callback("Transcribing with AssemblyAI...")
+            raw_transcript = transcribe_with_ai(ai_input)
+            
+            # Format transcript text with timestamps if utterances are available
+            if hasattr(raw_transcript, 'utterances') and raw_transcript.utterances:
+                formatted_lines = []
+                for utt in raw_transcript.utterances:
+                    seconds = utt.start // 1000
+                    minutes = seconds // 60
+                    rem_seconds = seconds % 60
+                    timestamp_str = f"[{minutes:02d}:{rem_seconds:02d}]"
+                    speaker = f"Speaker {utt.speaker}" if utt.speaker else "Unknown"
+                    formatted_lines.append(f"{timestamp_str} {speaker}: {utt.text}")
+                transcript_text = "\n".join(formatted_lines)
+                transcript = MockTranscript(transcript_text, raw_transcript.utterances)
+            else:
+                transcript_text = raw_transcript.text
+                transcript = MockTranscript(transcript_text, None)
 
         # Inject Context If Available
         context_prefix = ""
@@ -588,32 +665,25 @@ def process_file(path, calendar_context=None, progress_callback=None, custom_api
         enriched_text = context_prefix + transcript_text
 
         if progress_callback: progress_callback("Extracting meeting facts and insights...")
-        facts = extract_facts(enriched_text, custom_api_key, model_preference)
+        facts = extract_facts(enriched_text, custom_api_key, model_preference, meeting_role)
         
         # Speaker Summaries
         if progress_callback: progress_callback("Analyzing speaker contributions...")
         speaker_segments = extract_speaker_segments(transcript)
         speaker_summaries = summarize_speakers(speaker_segments, transcript_text, custom_api_key, model_preference)
 
-        # Dynamic prompt: longer overview for long transcripts
-        word_count = len(transcript_text.split())
-        LONG_TRANSCRIPT_THRESHOLD_WORDS = 3000
+        dynamic_summary_prompt = get_system_prompt_summary(summary_format)
+        word_count = len(enriched_text.split())
 
         if word_count > LONG_TRANSCRIPT_THRESHOLD_WORDS:
-            overview_instruction = "(8–15 lines of clear prose, in one or two paragraphs)"
-            print(f"📝 Long transcript detected ({word_count} words). Requesting detailed overview.")
-        else:
-            overview_instruction = "(3–4 lines of clear prose)"
-            print(f"📝 Short transcript detected ({word_count} words). Requesting standard overview.")
+            dynamic_summary_prompt += "\n\nNOTE: Because this is a long transcript, please provide a highly detailed, comprehensive summary."
 
-        dynamic_summary_prompt = SYSTEM_PROMPT_SUMMARY.replace(
-            "(3–4 lines of clear prose)",
-            overview_instruction
-        )
+        role_instruction = get_role_instructions(meeting_role)["summary"]
+        dynamic_summary_prompt += f"\n\nROLE CONTEXT: {role_instruction}"
 
         if progress_callback: progress_callback("Generating structured summary with Gemini...")
         summary_raw = call_llm(dynamic_summary_prompt, enriched_text, custom_api_key, model_preference)
-        summary_clean = clean_summary(summary_raw)
+        summary_clean = clean_summary(summary_raw, summary_format)
 
         if speaker_summaries:
             speaker_section = format_speaker_contributions(speaker_summaries)
@@ -637,10 +707,7 @@ def process_file(path, calendar_context=None, progress_callback=None, custom_api
 # ==========================================================
 # PROCESS TEXT ONLY (FOR LIVE RECORDINGS)
 # ==========================================================
-def process_text(transcript_text: str, calendar_context=None, progress_callback=None, custom_api_key=None, model_preference=None):
-    # We do not have speaker diaries from RealtimeTranscriber yet without specific configs, 
-    # but we can pass the raw text to the same pipeline.
-    
+def process_text(transcript_text: str, calendar_context=None, progress_callback=None, custom_api_key=None, model_preference=None, meeting_role=None, summary_format="default"):
     # Inject Context If Available
     context_prefix = ""
     if calendar_context:
@@ -649,34 +716,26 @@ def process_text(transcript_text: str, calendar_context=None, progress_callback=
     enriched_text = context_prefix + transcript_text
 
     if progress_callback: progress_callback("Extracting meeting facts and insights...")
-    facts = extract_facts(enriched_text, custom_api_key, model_preference)
-    speaker_summaries = [] # live string typically doesn't have diarization out of the box in simple streaming
+    facts = extract_facts(enriched_text, custom_api_key, model_preference, meeting_role)
+    speaker_summaries = []
 
-    # Dynamic prompt: longer overview for long transcripts
-    word_count = len(transcript_text.split())
-    LONG_TRANSCRIPT_THRESHOLD_WORDS = 3000
+    dynamic_summary_prompt = get_system_prompt_summary(summary_format)
+    word_count = len(enriched_text.split())
 
     if word_count > LONG_TRANSCRIPT_THRESHOLD_WORDS:
-        overview_instruction = "(8–15 lines of clear prose, in one or two paragraphs)"
-        print(f"📝 Long transcript detected ({word_count} words). Requesting detailed overview.")
-    else:
-        overview_instruction = "(3–4 lines of clear prose)"
-        print(f"📝 Short transcript detected ({word_count} words). Requesting standard overview.")
+        dynamic_summary_prompt += "\n\nNOTE: Because this is a long transcript, please provide a highly detailed, comprehensive summary."
 
-    dynamic_summary_prompt = SYSTEM_PROMPT_SUMMARY.replace(
-        "(3–4 lines of clear prose)",
-        overview_instruction
-    )
+    role_instruction = get_role_instructions(meeting_role)["summary"]
+    dynamic_summary_prompt += f"\n\nROLE CONTEXT: {role_instruction}"
 
     if progress_callback: progress_callback("Generating structured summary with Gemini...")
     summary_raw = call_llm(dynamic_summary_prompt, enriched_text, custom_api_key, model_preference)
-    summary_clean = clean_summary(summary_raw)
+    summary_clean = clean_summary(summary_raw, summary_format)
 
     topic = extract_topic(enriched_text, custom_api_key, model_preference)
     if isinstance(facts, dict):
         facts["meeting_topic"] = topic
 
-    # Create an artificial object to pass to save_outputs since it expects 'transcript' object
     class DummyTranscript:
         text = transcript_text
         

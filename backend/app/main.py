@@ -8,9 +8,11 @@ from app.api.routes import auth as auth_router
 from app.api.routes import meet_summary
 from app.api.routes import websockets
 from app.api.routes import live_record
+from app.api.routes import teams as teams_router
 from app.models.user import Base
 from app.models.summary import Summary  # ensure loaded
 from app.models.task import Task  # ensure loaded
+from app.models.team_member import TeamMember  # ensure loaded
 from app.db.session import engine
 
 def create_app() -> FastAPI:
@@ -32,6 +34,7 @@ def create_app() -> FastAPI:
 
     # 🧠 API ROUTES CAN HAVE PREFIX
     app.include_router(meet_summary.router, prefix="/api")
+    app.include_router(teams_router.router, prefix="/api")
 
     # 📡 WEBSOCKETS
     app.include_router(websockets.router)
@@ -47,12 +50,22 @@ import sqlite3 as _sqlite3
 with engine.connect() as _conn:
     _raw = _conn.connection.dbapi_connection
     _cur = _raw.cursor()
+    
+    # summaries.screenshots
     _cur.execute("PRAGMA table_info(summaries)")
     _existing_cols = {row[1] for row in _cur.fetchall()}
     if "screenshots" not in _existing_cols:
         _cur.execute("ALTER TABLE summaries ADD COLUMN screenshots JSON")
         _raw.commit()
         print("✅ Auto-migrated: added 'screenshots' column to summaries table")
+    
+    # users.meeting_role
+    _cur.execute("PRAGMA table_info(users)")
+    _user_cols = {row[1] for row in _cur.fetchall()}
+    if "meeting_role" not in _user_cols:
+        _cur.execute("ALTER TABLE users ADD COLUMN meeting_role TEXT DEFAULT 'general'")
+        _raw.commit()
+        print("✅ Auto-migrated: added 'meeting_role' column to users table")
 
 
 

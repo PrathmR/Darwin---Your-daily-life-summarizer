@@ -12,7 +12,7 @@ from app.api.ws_manager import manager
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-async def process_uploaded_file(file: UploadFile, calendar_context: Optional[str] = None, client_id: Optional[str] = None, custom_api_key: Optional[str] = None, model_preference: Optional[str] = None):
+async def process_uploaded_file(file: UploadFile, calendar_context: Optional[str] = None, client_id: Optional[str] = None, custom_api_key: Optional[str] = None, model_preference: Optional[str] = None, meeting_role: Optional[str] = None, summary_format: str = "default"):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{ts}_{file.filename}"
     path = os.path.join(UPLOAD_DIR, filename)
@@ -30,7 +30,7 @@ async def process_uploaded_file(file: UploadFile, calendar_context: Optional[str
             asyncio.run_coroutine_threadsafe(manager.send_personal_message(msg, client_id), loop)
 
     txt, summary_text, json_path, folder, facts, speaker_summaries = await loop.run_in_executor(
-        None, process_file, path, calendar_context, notify_progress, custom_api_key, model_preference
+        None, process_file, path, calendar_context, notify_progress, custom_api_key, model_preference, meeting_role, summary_format
     )
 
     return {

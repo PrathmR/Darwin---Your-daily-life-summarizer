@@ -5,13 +5,16 @@ from pydantic import BaseModel
 import asyncio
 import base64
 import json
+import re
 
 from app.services.meet_summary import process_uploaded_file
 from app.api import deps
 from app.models.summary import Summary
 from app.models.task import Task
 from app.models.user import User
+from app.models.team_member import TeamMember
 from app.email import send_task_assignment_email
+from app.services import jira_service
 
 router = APIRouter(prefix="/meet-summary", tags=["Meet Summary"])
 
@@ -19,6 +22,10 @@ class TextSummaryRequest(BaseModel):
     text: str
     calendar_context: Optional[str] = None
     client_id: Optional[str] = None
+    custom_api_key: Optional[str] = None
+    model_preference: Optional[str] = None
+    meeting_role: Optional[str] = None
+    summary_format: str = "default"
 
 @router.post("")
 async def summarize(
@@ -27,6 +34,8 @@ async def summarize(
     client_id: Optional[str] = Form(None),
     custom_api_key: Optional[str] = Form(None),
     model_preference: Optional[str] = Form(None),
+    meeting_role: Optional[str] = Form(None),
+    summary_format: Optional[str] = Form("default"),
     screenshot_0: Optional[UploadFile] = File(None),
     screenshot_1: Optional[UploadFile] = File(None),
     screenshot_times: Optional[str] = Form(None),
@@ -57,7 +66,7 @@ async def summarize(
             })
 
     # Call the ML service
-    result = await process_uploaded_file(file, calendar_context, client_id, custom_api_key, model_preference)
+    result = await process_uploaded_file(file, calendar_context, client_id, custom_api_key, model_preference, meeting_role, summary_format or "default")
 
     meeting_topic = result.get("facts", {}).get("meeting_topic")
     filename_to_save = meeting_topic if meeting_topic else file.filename
@@ -76,8 +85,10 @@ async def summarize(
     db.commit()
     db.refresh(db_summary)
 
-    # Process Tasks & Send Emails
+    # Process Tasks & Send Emails — with team member matching
     action_items = result.get("facts", {}).get("action_items", [])
+    team_members = db.query(TeamMember).filter(TeamMember.user_id == current_user.id).all()
+    
     if isinstance(action_items, list):
         for item in action_items:
             if not isinstance(item, dict):
@@ -87,11 +98,17 @@ async def summarize(
             assignee = item.get("assignee", "")
             deadline = item.get("deadline", "")
             
-            # Simple heuristic to extract email from the prompt if present
-            # Prompt output often has format: assignee Name (email@domain)
-            import re
+            # 1. Check if email is directly in the text
             emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', str(assignee) + " " + str(desc))
             assignee_email = emails[0] if emails else None
+            
+            # 2. If no email found, try matching the name to a team member
+            if not assignee_email and assignee and team_members:
+                assignee_lower = assignee.lower().strip()
+                for member in team_members:
+                    if member.name.lower() in assignee_lower or assignee_lower in member.name.lower():
+                        assignee_email = member.email
+                        break
             
             status = "emailed" if assignee_email else "pending"
             
@@ -112,6 +129,19 @@ async def summarize(
                     task_desc=desc,
                     topic=filename_to_save
                 )
+                
+                # Also create Jira issue if configured
+                try:
+                    if jira_service.is_jira_configured():
+                        matched_member = next((m for m in team_members if m.email == assignee_email), None)
+                        jira_account_id = matched_member.jira_account_id if matched_member else None
+                        jira_service.create_issue(
+                            summary=f"[Darwin] {desc}",
+                            description=f"Auto-assigned from meeting: {filename_to_save}\nAssignee: {assignee}\nDeadline: {deadline or 'None'}",
+                            assignee_account_id=jira_account_id
+                        )
+                except Exception as e:
+                    print(f"⚠️ Jira issue creation failed: {e}")
                 
         db.commit()
 
@@ -155,7 +185,8 @@ async def summarize_text(
 
     # Call the ML service via the threadpool since it does blocking LLM calls
     result = await loop.run_in_executor(
-        None, process_text, request.text, request.calendar_context, notify_progress
+        None, process_text, request.text, request.calendar_context, notify_progress,
+        request.custom_api_key, request.model_preference, request.meeting_role, request.summary_format
     )
 
     meeting_topic = result.get("facts", {}).get("meeting_topic")
@@ -174,8 +205,10 @@ async def summarize_text(
     db.commit()
     db.refresh(db_summary)
 
-    # Process Tasks & Send Emails
+    # Process Tasks & Send Emails — with team member matching
     action_items = result.get("facts", {}).get("action_items", [])
+    team_members = db.query(TeamMember).filter(TeamMember.user_id == current_user.id).all()
+    
     if isinstance(action_items, list):
         for item in action_items:
             if not isinstance(item, dict):
@@ -185,9 +218,17 @@ async def summarize_text(
             assignee = item.get("assignee", "")
             deadline = item.get("deadline", "")
             
-            import re
             emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', str(assignee) + " " + str(desc))
             assignee_email = emails[0] if emails else None
+            
+            if not assignee_email and assignee and team_members:
+                assignee_lower = assignee.lower().strip()
+                for member in team_members:
+                    if member.name.lower() in assignee_lower or assignee_lower in member.name.lower():
+                        assignee_email = member.email
+                        break
+            
+            status = "emailed" if assignee_email else "pending"
             
             db_task = Task(
                 summary_id=db_summary.id,
@@ -195,17 +236,29 @@ async def summarize_text(
                 assignee_name=assignee,
                 assignee_email=assignee_email,
                 deadline=deadline,
-                status="pending"
+                status=status
             )
             db.add(db_task)
             
             if assignee_email:
                 send_task_assignment_email(
                     to_email=assignee_email,
-                    task_description=desc,
-                    meeting_topic=meeting_topic or "Live Meeting",
-                    meeting_link="http://localhost:5173/game-workspace"
+                    assignee_name=assignee,
+                    task_desc=desc,
+                    topic=filename_to_save
                 )
+                
+                try:
+                    if jira_service.is_jira_configured():
+                        matched_member = next((m for m in team_members if m.email == assignee_email), None)
+                        jira_account_id = matched_member.jira_account_id if matched_member else None
+                        jira_service.create_issue(
+                            summary=f"[Darwin] {desc}",
+                            description=f"Auto-assigned from live meeting: {filename_to_save}\nAssignee: {assignee}\nDeadline: {deadline or 'None'}",
+                            assignee_account_id=jira_account_id
+                        )
+                except Exception as e:
+                    print(f"⚠️ Jira issue creation failed: {e}")
     
     db.commit()
 
