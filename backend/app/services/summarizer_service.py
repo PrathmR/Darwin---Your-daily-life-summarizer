@@ -549,13 +549,14 @@ def save_outputs(transcript, file_path, summary, facts, speaker_summaries):
 # ==========================================================
 # PROCESS FILE (USED BY FASTAPI)
 # ==========================================================
-def process_file(path):
+def process_file(path, calendar_context=None, progress_callback=None):
     ext = os.path.splitext(path)[1].lower()
     temp_audio = None
 
     try:
         if ext in [".mp4", ".mov", ".avi", ".mkv"]:
             print("🎬 Extracting audio...")
+            if progress_callback: progress_callback("Extracting audio from video...")
             temp_audio = os.path.join(UPLOAD_DIR, f"temp_{datetime.now().timestamp()}.mp3")
             with VideoFileClip(path) as v:
                 if not v.audio:
@@ -565,10 +566,19 @@ def process_file(path):
         else:
             ai_input = path
 
+        if progress_callback: progress_callback("Transcribing with AssemblyAI...")
         transcript = transcribe_with_ai(ai_input)
         transcript_text = transcript.text
 
-        facts = extract_facts(transcript_text)
+        # Inject Context If Available
+        context_prefix = ""
+        if calendar_context:
+            context_prefix = f"=== GOOGLE CALENDAR MEETING CONTEXT ===\n{calendar_context}\n=======================================\n\n"
+        
+        enriched_text = context_prefix + transcript_text
+
+        if progress_callback: progress_callback("Extracting meeting facts and insights...")
+        facts = extract_facts(enriched_text)
         speaker_summaries = []
 
         # Dynamic prompt: longer overview for long transcripts
@@ -587,7 +597,8 @@ def process_file(path):
             overview_instruction
         )
 
-        summary_raw = call_llm(dynamic_summary_prompt, transcript_text)
+        if progress_callback: progress_callback("Generating structured summary with Gemini...")
+        summary_raw = call_llm(dynamic_summary_prompt, enriched_text)
         summary_clean = clean_summary(summary_raw)
 
         if speaker_summaries:
@@ -597,13 +608,65 @@ def process_file(path):
                     f"{summary_clean}\n\nSpeaker Contributions\n{speaker_section}"
                 )
 
-        topic = extract_topic(transcript_text)
+        topic = extract_topic(enriched_text)
         if isinstance(facts, dict):
             facts["meeting_topic"] = topic
 
+        if progress_callback: progress_callback("Saving outputs...")
         return save_outputs(transcript, path, summary_clean, facts, speaker_summaries)
 
 
     finally:
         if temp_audio and os.path.exists(temp_audio):
             os.remove(temp_audio)
+
+# ==========================================================
+# PROCESS TEXT ONLY (FOR LIVE RECORDINGS)
+# ==========================================================
+def process_text(transcript_text: str, calendar_context=None, progress_callback=None):
+    # We do not have speaker diaries from RealtimeTranscriber yet without specific configs, 
+    # but we can pass the raw text to the same pipeline.
+    
+    # Inject Context If Available
+    context_prefix = ""
+    if calendar_context:
+        context_prefix = f"=== GOOGLE CALENDAR MEETING CONTEXT ===\n{calendar_context}\n=======================================\n\n"
+    
+    enriched_text = context_prefix + transcript_text
+
+    if progress_callback: progress_callback("Extracting meeting facts and insights...")
+    facts = extract_facts(enriched_text)
+    speaker_summaries = [] # live string typically doesn't have diarization out of the box in simple streaming
+
+    # Dynamic prompt: longer overview for long transcripts
+    word_count = len(transcript_text.split())
+    LONG_TRANSCRIPT_THRESHOLD_WORDS = 3000
+
+    if word_count > LONG_TRANSCRIPT_THRESHOLD_WORDS:
+        overview_instruction = "(8–15 lines of clear prose, in one or two paragraphs)"
+        print(f"📝 Long transcript detected ({word_count} words). Requesting detailed overview.")
+    else:
+        overview_instruction = "(3–4 lines of clear prose)"
+        print(f"📝 Short transcript detected ({word_count} words). Requesting standard overview.")
+
+    dynamic_summary_prompt = SYSTEM_PROMPT_SUMMARY.replace(
+        "(3–4 lines of clear prose)",
+        overview_instruction
+    )
+
+    if progress_callback: progress_callback("Generating structured summary with Gemini...")
+    summary_raw = call_llm(dynamic_summary_prompt, enriched_text)
+    summary_clean = clean_summary(summary_raw)
+
+    topic = extract_topic(enriched_text)
+    if isinstance(facts, dict):
+        facts["meeting_topic"] = topic
+
+    # Create an artificial object to pass to save_outputs since it expects 'transcript' object
+    class DummyTranscript:
+        text = transcript_text
+        
+    fake_path = os.path.join(UPLOAD_DIR, "live_recording.txt")
+
+    if progress_callback: progress_callback("Saving outputs...")
+    return save_outputs(DummyTranscript(), fake_path, summary_clean, facts, speaker_summaries)

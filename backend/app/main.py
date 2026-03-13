@@ -6,7 +6,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.routes import auth as auth_router
 from app.api.routes import meet_summary
+from app.api.routes import websockets
+from app.api.routes import live_record
 from app.models.user import Base
+from app.models.summary import Summary  # ensure loaded
+from app.models.task import Task  # ensure loaded
 from app.db.session import engine
 
 def create_app() -> FastAPI:
@@ -28,6 +32,10 @@ def create_app() -> FastAPI:
 
     # 🧠 API ROUTES CAN HAVE PREFIX
     app.include_router(meet_summary.router, prefix="/api")
+
+    # 📡 WEBSOCKETS
+    app.include_router(websockets.router)
+    app.include_router(live_record.router)
 
     return app
 

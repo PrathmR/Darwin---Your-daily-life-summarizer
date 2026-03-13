@@ -1,18 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { Upload, FileAudio, ArrowLeft, Download, FileText, Sparkles, Clock, Trash2 } from "lucide-react";
+import { Upload, FileAudio, ArrowLeft, Download, FileText, Sparkles, Clock, Trash2, Calendar, Mic, Square } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
-
-const STATUS_MESSAGES = [
-  "Uploading file…",
-  "Transcribing audio…",
-  "Identifying speakers…",
-  "Extracting key insights…",
-  "Generating summary…",
-  "Almost there…",
-];
 
 interface SummarySection {
   heading: string;
@@ -118,10 +109,72 @@ export default function CreateGame() {
   const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [statusIndex, setStatusIndex] = useState(0);
-  const intervalRef = useRef<number>();
+  const [loadingMsg, setLoadingMsg] = useState("Uploading file...");
+  const wsRef = useRef<WebSocket | null>(null);
   const dropRef = useRef<HTMLLabelElement>(null);
   const [dragOver, setDragOver] = useState(false);
+
+  const [calendarConnected, setCalendarConnected] = useState(false);
+  const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
+  const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
+
+  // Live Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const streamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<number>();
+
+  useEffect(() => {
+    const SRC = "https://accounts.google.com/gsi/client";
+    if (!document.querySelector(`script[src="${SRC}"]`)) {
+      const script = document.createElement("script");
+      script.src = SRC;
+      script.async = true;
+      script.defer = true;
+      document.body.appendChild(script);
+    }
+  }, []);
+
+  const connectCalendar = () => {
+    if (!window.google) {
+      toast({ title: "Google script loading, try again", variant: "destructive" });
+      return;
+    }
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+      scope: "https://www.googleapis.com/auth/calendar.readonly",
+      callback: (response: any) => {
+        if (response.error !== undefined) {
+          toast({ title: "Calendar access denied", variant: "destructive" });
+          return;
+        }
+        fetchCalendarEvents(response.access_token);
+      },
+    });
+    client.requestAccessToken();
+  };
+
+  const fetchCalendarEvents = async (token: string) => {
+    try {
+      const timeMin = new Date();
+      timeMin.setDate(timeMin.getDate() - 3); // past 3 days
+      const timeMax = new Date();
+      timeMax.setDate(timeMax.getDate() + 7); // next 7 days
+      const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin.toISOString()}&timeMax=${timeMax.toISOString()}&singleEvents=true&orderBy=startTime`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (data.items) {
+        setCalendarEvents(data.items);
+        setCalendarConnected(true);
+        toast({ title: "Calendar Connected", description: `Found ${data.items.length} recent/upcoming events.` });
+      }
+    } catch (e) {
+      toast({ title: "Failed to fetch calendar", variant: "destructive" });
+    }
+  };
 
   const [history, setHistory] = useState<any[]>([]);
   const [activeSummary, setActiveSummary] = useState<any | null>(null);
@@ -143,22 +196,37 @@ export default function CreateGame() {
   }
 
   useEffect(() => {
-    if (loading) {
-      setStatusIndex(0);
-      intervalRef.current = window.setInterval(() => {
-        setStatusIndex((prev) => (prev + 1) % STATUS_MESSAGES.length);
-      }, 3500);
-    } else {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    }
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [loading]);
+    return () => { 
+      if (wsRef.current) wsRef.current.close(); 
+    };
+  }, []);
 
   async function handleUpload() {
     if (!file) { toast({ title: "Select a file first", variant: "destructive" }); return; }
+    
+    const clientId = Date.now().toString();
+    const wsUrl = BACKEND_URL.replace("http", "ws") + `/ws/progress/${clientId}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+    
+    ws.onmessage = (event) => {
+      setLoadingMsg(event.data);
+    };
+
     const form = new FormData();
     form.append("file", file);
+    if (selectedEvent) {
+      const context = {
+        topic: selectedEvent.summary,
+        description: selectedEvent.description,
+        attendees: selectedEvent.attendees?.map((a: any) => a.email || a.displayName),
+      };
+      form.append("calendar_context", JSON.stringify(context));
+    }
+    form.append("client_id", clientId);
+    
     setLoading(true);
+    setLoadingMsg("Uploading file...");
     setActiveSummary(null);
 
     try {
@@ -186,6 +254,7 @@ export default function CreateGame() {
     } catch {
       toast({ title: "Summarization failed", variant: "destructive" });
     } finally {
+      if (wsRef.current) wsRef.current.close();
       setLoading(false);
     }
   }
@@ -195,6 +264,124 @@ export default function CreateGame() {
     setDragOver(false);
     const dropped = e.dataTransfer.files?.[0];
     if (dropped) setFile(dropped);
+  }
+
+  async function startLiveRecording() {
+    try {
+      // Capture system/tab audio (browser requires getDisplayMedia)
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,  // required by browser API
+        audio: true
+      });
+
+      // Check if audio track was actually shared
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        toast({ title: "No audio track", description: "Please check 'Share tab audio' in the sharing dialog.", variant: "destructive" });
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      // Immediately discard the video track — we only want audio
+      stream.getVideoTracks().forEach(track => track.stop());
+      
+      // Create a new stream with only audio tracks
+      const audioOnlyStream = new MediaStream(audioTracks);
+      streamRef.current = stream;
+
+      const recorder = new MediaRecorder(audioOnlyStream, { mimeType: 'audio/webm' });
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.start(1000); // Collect data every 1s
+      setIsRecording(true);
+      setRecordingTime(0);
+      setActiveSummary(null);
+
+      // Start a timer to show elapsed time
+      timerRef.current = window.setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+
+      toast({ title: "Recording started", description: "Capturing system audio. Click Stop when done." });
+
+    } catch (err) {
+      console.error(err);
+      toast({ title: "Failed to start recording", description: "Ensure you grant audio permissions and check 'Share tab audio'.", variant: "destructive" });
+    }
+  }
+
+  async function stopLiveRecording() {
+    // Stop timer
+    if (timerRef.current) clearInterval(timerRef.current);
+    setIsRecording(false);
+
+    // Stop recorder
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") {
+      toast({ title: "No recording to process", variant: "destructive" });
+      return;
+    }
+
+    // Wait for final data
+    await new Promise<void>(resolve => {
+      recorder.onstop = () => resolve();
+      recorder.stop();
+    });
+
+    // Stop all tracks
+    streamRef.current?.getTracks().forEach(track => track.stop());
+
+    const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+    if (audioBlob.size < 1000) {
+      toast({ title: "Recording too short or no audio captured", variant: "destructive" });
+      return;
+    }
+
+    // Upload the recorded blob to the existing file upload endpoint
+    const clientId = Date.now().toString();
+    const wsUrl = BACKEND_URL.replace("http", "ws") + `/ws/progress/${clientId}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+    ws.onmessage = (event) => setLoadingMsg(event.data);
+
+    setLoading(true);
+    setLoadingMsg("Uploading recorded audio...");
+
+    try {
+      const form = new FormData();
+      form.append("file", audioBlob, "live_recording.webm");
+      form.append("client_id", clientId);
+      if (selectedEvent) {
+        const context = {
+          topic: selectedEvent.summary,
+          description: selectedEvent.description,
+          attendees: selectedEvent.attendees?.map((a: any) => a.email || a.displayName),
+        };
+        form.append("calendar_context", JSON.stringify(context));
+      }
+
+      const res = await fetch(`${BACKEND_URL}/api/meet-summary`, {
+        method: "POST",
+        credentials: "include",
+        body: form
+      });
+      if (!res.ok) throw new Error("Failed to process recording");
+
+      await fetchHistory();
+      toast({ title: "Live recording summarized ✅" });
+    } catch (err) {
+      toast({ title: "Processing failed", variant: "destructive" });
+    } finally {
+      if (wsRef.current) wsRef.current.close();
+      setLoading(false);
+    }
   }
 
   const parsed = activeSummary?.summary_text ? parseSummary(activeSummary.summary_text) : null;
@@ -265,7 +452,7 @@ export default function CreateGame() {
           <div className="max-w-4xl mx-auto w-full">
             
             {/* Upload Area */}
-            {!activeSummary && !loading && (
+            {!activeSummary && !loading && !isRecording && (
               <div className="mt-10">
                 <h1 className="text-3xl font-bold text-center mb-2">Meeting Summarizer</h1>
                 <p className="text-gray-500 text-center mb-10 text-sm">Upload your meeting recording and let AI do the rest.</p>
@@ -284,13 +471,68 @@ export default function CreateGame() {
                     {file && <span className="text-xs text-gray-400">{(file.size / 1024 / 1024).toFixed(1)} MB</span>}
                     <input type="file" className="hidden" accept="audio/*,video/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
                   </label>
-                  <button
-                    onClick={handleUpload}
-                    disabled={!file}
-                    className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-200"
-                  >
-                    <Upload className="w-4 h-4" /> Upload & Summarize
-                  </button>
+                  
+                  <div className="w-full">
+                    {!calendarConnected ? (
+                      <button type="button" onClick={connectCalendar} className="text-sm bg-white border px-4 py-2 rounded-xl border-gray-200 outline-none flex items-center gap-2 hover:bg-gray-50 text-gray-700 w-full justify-center transition-colors shadow-sm">
+                        <Calendar className="w-4 h-4 text-emerald-600"/> Auto-fill meeting details using Google Calendar
+                      </button>
+                    ) : (
+                      <select className="w-full p-3 border border-emerald-300 bg-emerald-50 rounded-xl text-sm outline-none text-emerald-900 shadow-sm" onChange={(e) => setSelectedEvent(calendarEvents.find(ev => ev.id === e.target.value))}>
+                        <option value="">-- No specific meeting context --</option>
+                        {calendarEvents.map(ev => (
+                          <option key={ev.id} value={ev.id}>📝 {ev.summary || "Untitled"} - {new Date(ev.start?.dateTime || ev.start?.date).toLocaleDateString()}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={handleUpload}
+                      disabled={!file}
+                      className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-200"
+                    >
+                      <Upload className="w-4 h-4" /> Upload File
+                    </button>
+                    <button
+                      onClick={startLiveRecording}
+                      className="w-full bg-red-50 text-red-600 border border-red-200 py-3 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-red-100 transition-colors shadow-sm"
+                    >
+                      <Mic className="w-4 h-4" /> Record Live
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Live Recording Area */}
+            {isRecording && (
+              <div className="mt-10 max-w-2xl mx-auto animate-fade-in">
+                <div className="bg-white border-2 border-red-200 rounded-2xl p-8 shadow-sm">
+                  <div className="flex items-center justify-between mb-6 border-b border-gray-100 pb-4">
+                    <div className="flex items-center gap-3">
+                      <span className="relative flex h-3 w-3">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                      </span>
+                      <h2 className="text-lg font-bold text-gray-800">Recording System Audio</h2>
+                    </div>
+                    <button onClick={stopLiveRecording} className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-red-700 transition-colors shadow-md shadow-red-200">
+                      <Square className="w-4 h-4" /> Stop & Summarize
+                    </button>
+                  </div>
+                  <div className="bg-gray-50 rounded-xl p-8 flex flex-col items-center justify-center min-h-[200px] border border-gray-100 shadow-inner">
+                    <p className="text-5xl font-mono font-bold text-gray-800 mb-4 tabular-nums">
+                      {String(Math.floor(recordingTime / 60)).padStart(2, '0')}:{String(recordingTime % 60).padStart(2, '0')}
+                    </p>
+                    <div className="flex items-center gap-1 mb-4">
+                      {[...Array(12)].map((_, i) => (
+                        <div key={i} className="w-1.5 bg-red-400 rounded-full animate-pulse" style={{ height: `${12 + Math.random() * 24}px`, animationDelay: `${i * 0.1}s` }} />
+                      ))}
+                    </div>
+                    <p className="text-sm text-gray-500">Capturing audio from the shared tab. Click <b>Stop & Summarize</b> when done.</p>
+                  </div>
                 </div>
               </div>
             )}
@@ -303,7 +545,7 @@ export default function CreateGame() {
                   <div className="absolute inset-0 rounded-full border-4 border-emerald-500 border-t-transparent animate-spin" />
                   <div className="absolute inset-2 rounded-full border-4 border-emerald-300 border-b-transparent animate-spin" style={{ animationDirection: "reverse", animationDuration: "1.5s" }} />
                 </div>
-                <p key={statusIndex} className="text-gray-600 font-medium text-sm animate-fade-in">{STATUS_MESSAGES[statusIndex]}</p>
+                <p key={loadingMsg} className="text-gray-600 font-medium text-sm animate-fade-in">{loadingMsg}</p>
                 <p className="text-gray-400 text-xs mt-2">This may take a few minutes depending on the file size.</p>
               </div>
             )}
@@ -374,6 +616,34 @@ export default function CreateGame() {
                             {activeSummary.facts.participants.map((p: string, i: number) => (
                               <span key={i} className="bg-blue-50 text-blue-700 text-sm px-3 py-1.5 rounded-xl font-medium border border-blue-100">{p}</span>
                             ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {activeSummary.facts.action_items?.length > 0 && (
+                        <div className="md:col-span-2 mt-2 pt-4 border-t border-gray-100">
+                          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Assigned Action Items</p>
+                          <div className="space-y-3">
+                            {activeSummary.facts.action_items.map((task: any, i: number) => {
+                              const strDesc = String(task.task || "");
+                              const strAssgn = String(task.assignee || "");
+                              const hasEmail = strDesc.includes('@') || strAssgn.includes('@');
+                              return (
+                                <div key={i} className="bg-gray-50 border border-gray-100 rounded-xl p-4 flex items-start justify-between gap-4">
+                                  <div className="flex-1">
+                                    <p className="text-sm font-medium text-gray-900">{task.task}</p>
+                                    <p className="text-xs text-gray-500 mt-1">Assignee: {task.assignee || "Unassigned"} {task.deadline && task.deadline !== "null" ? `• Due: ${task.deadline}` : ""}</p>
+                                  </div>
+                                  <div className="shrink-0 pt-1">
+                                    {hasEmail ? (
+                                      <span className="bg-emerald-100 text-emerald-700 text-[10px] uppercase font-bold tracking-wide px-2 py-1 rounded-md">Email Sent</span>
+                                    ) : (
+                                      <span className="bg-yellow-100 text-yellow-700 text-[10px] uppercase font-bold tracking-wide px-2 py-1 rounded-md mb-1 block text-center">Pending Email</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       )}
